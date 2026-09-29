@@ -18,6 +18,10 @@ from dbus_next import Message, Variant
 from dbus_next.constants import MessageType
 
 
+# ============================================================
+# Logging
+# ============================================================
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -26,25 +30,50 @@ logging.basicConfig(
 logger = logging.getLogger("companion.capture")
 
 
+# ============================================================
+# XDG Desktop Portal constants
+# ============================================================
+
 BUS_NAME = "org.freedesktop.portal.Desktop"
+
 PORTAL_PATH = "/org/freedesktop/portal/desktop"
+
 SCREENCAST_INTERFACE = "org.freedesktop.portal.ScreenCast"
+
 REQUEST_INTERFACE = "org.freedesktop.portal.Request"
 
 
+# ============================================================
+# WindowSelector
+# ============================================================
+
 class WindowSelector:
+
+    # --------------------------------------------------------
+    # Initialization
+    # --------------------------------------------------------
 
     def __init__(self):
         self.bus = None
         self.session_handle = None
 
+    # --------------------------------------------------------
+    # Connect to D-Bus
+    # --------------------------------------------------------
+
     async def connect(self):
         """Connect to the user's D-Bus session."""
 
-        self.bus = await MessageBus().connect()
+        self.bus = await MessageBus(
+            negotiate_unix_fd=True
+        ).connect()
 
         logger.info("Connected to D-Bus")
         logger.info("Connected to XDG Desktop Portal")
+
+    # --------------------------------------------------------
+    # Generic D-Bus call
+    # --------------------------------------------------------
 
     async def call(self, member, signature="", body=None):
         """Send a direct D-Bus method call."""
@@ -70,12 +99,17 @@ class WindowSelector:
 
         return reply.body
 
+    # --------------------------------------------------------
+    # Wait for portal response
+    # --------------------------------------------------------
+
     async def wait_for_response(self, request_path):
         """
         Wait for the XDG portal Request.Response signal.
         """
 
         loop = asyncio.get_running_loop()
+
         future = loop.create_future()
 
         def handler(message):
@@ -109,24 +143,36 @@ class WindowSelector:
 
         return results
 
+    # --------------------------------------------------------
+    # Create ScreenCast session
+    # --------------------------------------------------------
+
     async def create_session(self):
         """Create a ScreenCast session."""
 
-        handle_token = f"companion_{uuid.uuid4().hex}"
-        session_token = f"session_{uuid.uuid4().hex}"
+        handle_token = (
+            f"companion_{uuid.uuid4().hex}"
+        )
+
+        session_token = (
+            f"session_{uuid.uuid4().hex}"
+        )
 
         options = {
             "handle_token": Variant(
                 "s",
                 handle_token,
             ),
+
             "session_handle_token": Variant(
                 "s",
                 session_token,
             ),
         }
 
-        logger.info("Creating ScreenCast session...")
+        logger.info(
+            "Creating ScreenCast session..."
+        )
 
         result = await self.call(
             "CreateSession",
@@ -145,9 +191,9 @@ class WindowSelector:
             request_path
         )
 
-        self.session_handle = results[
-            "session_handle"
-        ].value
+        self.session_handle = (
+            results["session_handle"].value
+        )
 
         logger.info(
             "ScreenCast session created: %s",
@@ -156,25 +202,34 @@ class WindowSelector:
 
         return self.session_handle
 
+    # --------------------------------------------------------
+    # Select ONE application window
+    # --------------------------------------------------------
+
     async def select_window(self):
         """Request the user to select one application window."""
 
         if self.session_handle is None:
             await self.create_session()
 
-        handle_token = f"select_{uuid.uuid4().hex}"
+        handle_token = (
+            f"select_{uuid.uuid4().hex}"
+        )
 
         options = {
+
             # 1 = monitor
             # 2 = window
             #
             # Companion requests WINDOW only.
+
             "types": Variant(
                 "u",
                 2,
             ),
 
             # Only one source.
+
             "multiple": Variant(
                 "b",
                 False,
@@ -215,10 +270,16 @@ class WindowSelector:
 
         return results
 
+    # --------------------------------------------------------
+    # Start capture
+    # --------------------------------------------------------
+
     async def start_capture(self):
         """Start the authorized screen-capture session."""
 
-        handle_token = f"start_{uuid.uuid4().hex}"
+        handle_token = (
+            f"start_{uuid.uuid4().hex}"
+        )
 
         options = {
             "handle_token": Variant(
@@ -264,6 +325,39 @@ class WindowSelector:
 
         return streams
 
+    # --------------------------------------------------------
+    # Open portal-authorized PipeWire remote
+    # --------------------------------------------------------
+
+    async def open_pipewire_remote(self):
+        """Open the portal-authorized PipeWire remote."""
+
+        logger.info(
+            "Opening portal PipeWire remote..."
+        )
+
+        result = await self.call(
+            "OpenPipeWireRemote",
+            "oa{sv}",
+            [
+                self.session_handle,
+                {},
+            ],
+        )
+
+        fd = result[0]
+
+        logger.info(
+            "Portal PipeWire remote opened. FD=%s",
+            fd,
+        )
+
+        return fd
+
+    # --------------------------------------------------------
+    # Close session
+    # --------------------------------------------------------
+
     async def close(self):
         """Close the portal session."""
 
@@ -284,6 +378,10 @@ class WindowSelector:
         )
 
 
+# ============================================================
+# Main
+# ============================================================
+
 async def main():
 
     selector = WindowSelector()
@@ -296,12 +394,20 @@ async def main():
         print("==========================================")
         print()
 
+        # ----------------------------------------------------
+        # Connect
+        # ----------------------------------------------------
+
         await selector.connect()
 
         print(
             "Creating Wayland capture session..."
         )
         print()
+
+        # ----------------------------------------------------
+        # Create session
+        # ----------------------------------------------------
 
         await selector.create_session()
 
@@ -315,18 +421,39 @@ async def main():
         )
         print()
 
+        # ----------------------------------------------------
+        # Select window
+        # ----------------------------------------------------
+
         await selector.select_window()
 
         print()
         print(
             "Window source selected."
         )
+
+        # ----------------------------------------------------
+        # Start capture
+        # ----------------------------------------------------
+
         print(
             "Starting capture..."
         )
         print()
 
         streams = await selector.start_capture()
+
+        # ----------------------------------------------------
+        # Open PipeWire remote
+        # ----------------------------------------------------
+
+        pipewire_fd = (
+            await selector.open_pipewire_remote()
+        )
+
+        # ----------------------------------------------------
+        # Success
+        # ----------------------------------------------------
 
         print()
         print("==========================================")
@@ -338,11 +465,27 @@ async def main():
             f"PipeWire streams: {streams}"
         )
 
+        print(
+            f"PipeWire FD: {pipewire_fd}"
+        )
+
+        print()
+        print(
+            "Capture session is alive."
+        )
+
+        print(
+            "Press Ctrl+C to stop."
+        )
+
         print()
 
-        # Keep the session alive temporarily.
-        # The next step will consume this PipeWire stream.
-        await asyncio.sleep(5)
+        # ----------------------------------------------------
+        # Keep session alive
+        # ----------------------------------------------------
+
+        while True:
+            await asyncio.sleep(1)
 
     except Exception as exc:
 
@@ -361,5 +504,10 @@ async def main():
         await selector.close()
 
 
+# ============================================================
+# Entry point
+# ============================================================
+
 if __name__ == "__main__":
+
     asyncio.run(main())
